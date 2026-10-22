@@ -48,4 +48,11 @@ async def upload_dataset(file: UploadFile = File(...)):
 @app.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: int, limit: int = Query(default=100, ge=1)):
     """Return up to limit rows from a stored dataset."""
-    pass
+    df = storage.get(dataset_id)
+    if df is None:
+        logger.warning("Dataset not found: id=%d", dataset_id)
+        raise HTTPException(status_code=404,  detail=f"Dataset {dataset_id} not found")
+    
+    records = json.loads(df.head(limit).to_json(orient="records"))
+    logger.info("Retrieved dataset: id=%d, returned_rows=%d", dataset_id, len(records))
+    return {"id": dataset_id, "data": records, "total_rows": len(df)}
