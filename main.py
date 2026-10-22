@@ -20,7 +20,30 @@ def health_check():
 @app.post("/upload", response_model=DatasetInfo)
 async def upload_dataset(file: UploadFile = File(...)):
     """Read and store a CSV upload."""
-    pass
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix != ".csv":
+        logger.warning("Unsupported file format: %s", suffix)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format '{suffix}'. Only .csv files are accepted.",
+        )
+
+    contents = await file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(contents))
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as e:
+        logger.warning("Could not parse CSV '%s': %s", file.filename, e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read CSV file: {e}",
+        )
+
+    dataset_id = storage.save(df, file.filename)
+    logger.info(
+        "Uploaded dataset: id=%d, filename=%s, rows=%d",
+        dataset_id, file.filename, len(df),
+    )
+    return storage.get_metadata(dataset_id)
 
 @app.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: int, limit: int = Query(default=100, ge=1)):
