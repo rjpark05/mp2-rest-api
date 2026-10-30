@@ -4,7 +4,16 @@ import logging
 from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from src import DatasetInfo, DatasetStorage, HealthResponse, setup_logging
+from src import (
+    DatasetInfo,
+    DatasetStorage,
+    HealthResponse,
+    ProcessConfig,
+    ProcessingReport,
+    log_requests,
+    setup_logging,
+)
+from data_pipeline import create_cleaning_report, process_data, validate_dataframe
 
 setup_logging(verbose=True)
 logger = logging.getLogger(__name__)
@@ -56,3 +65,42 @@ def get_dataset(dataset_id: int, limit: int = Query(default=100, ge=1)):
     records = json.loads(df.head(limit).to_json(orient="records"))
     logger.info("Retrieved dataset: id=%d, returned_rows=%d", dataset_id, len(records))
     return {"id": dataset_id, "data": records, "total_rows": len(df)}
+
+@app.post(
+    "/datasets/{dataset_id}/process",
+    response_model=ProcessingReport
+)
+def process_dataset(dataset_id: int, config: ProcessConfig):
+    """Validate and process a stored dataset using MP1 functions."""
+    df = storage.get(dataset_id)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
+
+    settings = config.model_dump()
+    required = settings["validation"]["required_columns"]
+    numeric = settings["validation"]["numeric_columns"]
+
+    for col in numeric:
+        if col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column not found: {col}")
+
+    try:
+        validated = validate_dataframe(df, required, numeric)
+        removed = len(df) - len(validated)
+        before = validated.copy()
+        processed = process_data(validated, settings)
+        report = create_cleaning_report(before, processed)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    storage.update(dataset_id, processed)
+
+    logger.info(
+        "Processed dataset: id=%d, validation_removed=%d, rows_before=%d, rows_after=%d",
+        dataset_id, removed, report["rows_before"], report["rows_after"],
+    )
+    return {
+        "id": dataset_id,
+        "validation_rows_removed": removed,
+        "cleaning_report": report,
+    }
